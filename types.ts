@@ -3,6 +3,14 @@ export enum GamePhase {
   SETUP = 'SETUP',
   PLAYING = 'PLAYING',
   GAME_OVER = 'GAME_OVER',
+  VICTORY = 'VICTORY',
+}
+
+export interface FinancialSnapshot {
+  month: number;
+  revenue: number;
+  expenses: number;
+  profit: number;
 }
 
 // Financial Structures
@@ -13,6 +21,7 @@ export interface CorporateFinance {
   debtService: number;
   valuation: number;
   health: string;
+  history?: FinancialSnapshot[];
 }
 
 export interface Investment {
@@ -31,6 +40,7 @@ export interface PersonalFinance {
   passiveIncome: number;
   lifestyleCost: number;
   surplus: number;
+  stress: number; // 0 to 100
 }
 
 // Game Data Structures
@@ -41,6 +51,13 @@ export interface Archetype {
   startingCapital: number;
   uniqueAsset: string;
   criticalFlaw: string;
+}
+
+export interface Rival {
+  name: string;
+  companyName: string;
+  description: string; // Why they hate you or compete with you
+  archetype: string;
 }
 
 export interface GameOption {
@@ -56,10 +73,13 @@ export interface GameState {
   companyName: string;
   archetypeId: string;
   
+  // New: Rival
+  rival?: Rival;
+  
   // Indicators
   inflationRate: number;
   interestRate: number;
-  marketMood: string;
+  marketMood: string; // "Bull Market", "Bear Market", "Crash", "Neutral"
 
   // Narrative
   narrativeLog: NarrativeLog[];
@@ -70,10 +90,14 @@ export interface GameState {
   
   // Current Turn Data
   currentEvent?: string;
+  headlines?: string[]; // Breaking news
   currentOptions: GameOption[];
   
   isGameOver: boolean;
   gameOverReason?: string;
+  
+  // Victory Flag
+  isVictory?: boolean;
 }
 
 export interface NarrativeLog {
@@ -89,6 +113,7 @@ export interface SetupResponse {
   intro: string;
   marketMood: string;
   archetypes: Archetype[];
+  rival: Rival; // Generated at start
 }
 
 export interface TurnResponse {
@@ -96,6 +121,7 @@ export interface TurnResponse {
   marketContext: string; // Up/Down/Crash
   inflationRate: number;
   interestRate: number;
+  headlines: string[]; // 3-5 short news items
   
   corporateUpdates: CorporateFinance;
   personalUpdates: PersonalFinance;
@@ -105,4 +131,6 @@ export interface TurnResponse {
   
   isGameOver: boolean;
   gameOverReason?: string;
+  
+  isVictory?: boolean;
 }

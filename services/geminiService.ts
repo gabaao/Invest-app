@@ -5,34 +5,50 @@ const SYSTEM_INSTRUCTION = `
 IDENTIDADE E OBJETIVO
 Você é o "Mestre do Jogo Financeiro", uma IA sofisticada que simula uma jornada empresarial hiper-realista e de alto risco.
 Tom: Mentor rigoroso, analítico (CFO de Wall Street), narrativa vívida.
-Dificuldade: HARDCORE. Sem "plot armor". Inflação, processos trabalhistas, juros altos e concorrentes agressivos são ameaças reais.
-Idioma: PORTUGUÊS BRASILEIRO (pt-BR).
+Dificuldade: HARDCORE.
 
 REGRAS CENTRAIS:
-1.  **Separação Patrimonial Rigorosa**: Finanças Corporativas (PJ) e Pessoais (PF) são distintas. Misturar os caixas é crime de governança.
-2.  **Turnos**: Mensais.
-3.  **Economia**: Alta volatilidade (Contexto Brasil/Emergente). Acompanhe a Taxa Selic (Juros Base) e a Inflação.
-4.  **Financeiro**: Calcule mudanças financeiras realistas com base nas decisões do usuário.
-5.  **Investimentos**: Mantenha um rastreamento detalhado dos investimentos pessoais (Ações, Renda Fixa, etc.) e seus rendimentos mensais.
+1.  **Separação Patrimonial**: Finanças Corporativas (PJ) e Pessoais (PF) são distintas.
+2.  **Economia Viva**: Crie "Breaking News" (Manchetes) que dão pistas sobre o mercado.
+3.  **Rivalidade**: O jogador tem um RIVAL definido. Inclua ações desse rival na narrativa ocasionalmente (ex: roubando clientes, sabotagem, ofertas hostis).
+4.  **Saúde Mental (STRESS)**:
+    *   Monitore o nível de Stress (0 a 100) na PF.
+    *   Decisões "AGGRESSIVE" ou crises aumentam o Stress (+10 a +25).
+    *   Gastar excedente em "Lifestyle" ou tirar férias (opções Conservative) reduz o Stress (-10 a -30).
+    *   Se Stress >= 100: Ocorrer um "BURNOUT". O jogador vai para o hospital, paga uma conta alta e perde produtividade (lucro cai).
+5.  **Cash Drag**: Inflação corrói dinheiro parado.
+6.  **Vitória**: Patrimônio Líquido PF > R$ 5.000.000 + Renda Passiva > Custo de Vida.
+
+ATMOSFERA DE MERCADO (marketMood):
+Classifique sempre como: "Bull Market" (Otimismo), "Bear Market" (Pessimismo), "Recessão", "Crash" ou "Estagnado".
 
 FORMATO DE SAÍDA:
-Responda APENAS em JSON, seguindo os schemas fornecidos nas definições de função.
+Responda APENAS em JSON limpo.
 `;
 
-// Initialize Gemini
-// NOTE: We assume process.env.API_KEY is available as per instructions.
+// Helper to clean Markdown from JSON
+const cleanAndParseJSON = <T>(text: string): T => {
+  try {
+    const cleaned = text.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+    return JSON.parse(cleaned);
+  } catch (e) {
+    console.error("Failed to parse JSON from Gemini:", text);
+    throw new Error("Invalid JSON response from AI Model");
+  }
+};
+
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 const MODEL_NAME = 'gemini-3-flash-preview';
 
 /**
- * Fetch the initial setup: Intro and 3 Archetypes.
+ * Fetch the initial setup including a generated Rival
  */
 export const fetchSetup = async (): Promise<SetupResponse> => {
   const schema: Schema = {
     type: Type.OBJECT,
     properties: {
-      intro: { type: Type.STRING, description: "Introdução atmosférica definindo o humor econômico." },
-      marketMood: { type: Type.STRING, description: "Descrição curta do mercado (ex: 'Recessão', 'Aquecido')." },
+      intro: { type: Type.STRING },
+      marketMood: { type: Type.STRING },
       archetypes: {
         type: Type.ARRAY,
         items: {
@@ -41,20 +57,30 @@ export const fetchSetup = async (): Promise<SetupResponse> => {
             id: { type: Type.STRING },
             name: { type: Type.STRING },
             description: { type: Type.STRING },
-            startingCapital: { type: Type.NUMBER, description: "Entre 5000 e 25000" },
+            startingCapital: { type: Type.NUMBER },
             uniqueAsset: { type: Type.STRING },
             criticalFlaw: { type: Type.STRING },
           },
           required: ["id", "name", "description", "startingCapital", "uniqueAsset", "criticalFlaw"],
         },
       },
+      rival: {
+        type: Type.OBJECT,
+        properties: {
+            name: { type: Type.STRING },
+            companyName: { type: Type.STRING },
+            description: { type: Type.STRING },
+            archetype: { type: Type.STRING },
+        },
+        required: ["name", "companyName", "description", "archetype"]
+      }
     },
-    required: ["intro", "marketMood", "archetypes"],
+    required: ["intro", "marketMood", "archetypes", "rival"],
   };
 
   const response = await ai.models.generateContent({
     model: MODEL_NAME,
-    contents: "Inicialize a Fase 1: A Configuração. Forneça uma introdução atmosférica e 3 arquétipos iniciais distintos (Herdeiro Desonrado, Hacker de Garagem, Vendedor de Rua).",
+    contents: "Inicialize a Fase 1: A Configuração. Introdução, 3 arquétipos de jogador e 1 RIVAL (Antagonista) que competirá com o jogador.",
     config: {
       systemInstruction: SYSTEM_INSTRUCTION,
       responseMimeType: "application/json",
@@ -63,11 +89,11 @@ export const fetchSetup = async (): Promise<SetupResponse> => {
   });
 
   if (!response.text) throw new Error("No response from Gemini");
-  return JSON.parse(response.text) as SetupResponse;
+  return cleanAndParseJSON<SetupResponse>(response.text);
 };
 
 /**
- * Process a turn. Takes current state and user decision, returns new state.
+ * Process a turn
  */
 export const processTurn = async (
   currentState: GameState,
@@ -79,10 +105,15 @@ export const processTurn = async (
   const schema: Schema = {
     type: Type.OBJECT,
     properties: {
-      narrative: { type: Type.STRING, description: "Descrição vívida dos eventos do mês e o resultado da decisão anterior." },
-      marketContext: { type: Type.STRING, description: "Status atual do mercado (ex: 'Rali do Setor', 'Crise de Crédito')." },
-      inflationRate: { type: Type.NUMBER, description: "Taxa de inflação atual (%)." },
-      interestRate: { type: Type.NUMBER, description: "Taxa básica de juros (Selic) atual (%)." },
+      narrative: { type: Type.STRING },
+      marketContext: { type: Type.STRING },
+      headlines: { 
+          type: Type.ARRAY, 
+          items: { type: Type.STRING },
+          description: "3 a 5 manchetes curtas de notícias fictícias que afetam o mundo do jogo."
+      },
+      inflationRate: { type: Type.NUMBER },
+      interestRate: { type: Type.NUMBER },
       corporateUpdates: {
         type: Type.OBJECT,
         properties: {
@@ -91,7 +122,7 @@ export const processTurn = async (
           expenses: { type: Type.NUMBER },
           debtService: { type: Type.NUMBER },
           valuation: { type: Type.NUMBER },
-          health: { type: Type.STRING, description: "Solvente, Crise de Caixa, ou Falência" },
+          health: { type: Type.STRING },
         },
         required: ["cash", "revenue", "expenses", "debtService", "valuation", "health"]
       },
@@ -100,18 +131,17 @@ export const processTurn = async (
         properties: {
           netWorth: { type: Type.NUMBER },
           cash: { type: Type.NUMBER },
-          portfolio: { type: Type.NUMBER, description: "Valor total investido." },
+          portfolio: { type: Type.NUMBER },
           investments: {
              type: Type.ARRAY,
-             description: "Lista detalhada dos investimentos e seus rendimentos.",
              items: {
                 type: Type.OBJECT,
                 properties: {
-                    name: { type: Type.STRING, description: "Ex: 'Tesouro Direto', 'Ações PETR4'" },
+                    name: { type: Type.STRING },
                     type: { type: Type.STRING, enum: ['Renda Fixa', 'Ações', 'FIIs', 'Cripto', 'Reserva'] },
-                    amount: { type: Type.NUMBER, description: "Valor atual do ativo." },
-                    monthlyYield: { type: Type.NUMBER, description: "Rendimento em dinheiro neste mês." },
-                    yieldRate: { type: Type.NUMBER, description: "Rendimento percentual neste mês." }
+                    amount: { type: Type.NUMBER },
+                    monthlyYield: { type: Type.NUMBER },
+                    yieldRate: { type: Type.NUMBER }
                 },
                 required: ["name", "type", "amount", "monthlyYield", "yieldRate"]
              }
@@ -119,18 +149,19 @@ export const processTurn = async (
           passiveIncome: { type: Type.NUMBER },
           lifestyleCost: { type: Type.NUMBER },
           surplus: { type: Type.NUMBER },
+          stress: { type: Type.NUMBER, description: "Nível de stress acumulado (0-100)." },
         },
-        required: ["netWorth", "cash", "portfolio", "investments", "passiveIncome", "lifestyleCost", "surplus"]
+        required: ["netWorth", "cash", "portfolio", "investments", "passiveIncome", "lifestyleCost", "surplus", "stress"]
       },
-      event: { type: Type.STRING, description: "O conflito ou dilema específico para este mês." },
+      event: { type: Type.STRING },
       options: {
         type: Type.ARRAY,
         items: {
           type: Type.OBJECT,
           properties: {
             id: { type: Type.STRING, enum: ["A", "B", "C"] },
-            label: { type: Type.STRING, description: "Título curto (ex: 'Expansão Agressiva')" },
-            description: { type: Type.STRING, description: "Descrição da escolha estratégica." },
+            label: { type: Type.STRING },
+            description: { type: Type.STRING },
             type: { type: Type.STRING, enum: ["AGGRESSIVE", "CONSERVATIVE", "CREATIVE"] }
           },
           required: ["id", "label", "description", "type"]
@@ -138,8 +169,9 @@ export const processTurn = async (
       },
       isGameOver: { type: Type.BOOLEAN },
       gameOverReason: { type: Type.STRING },
+      isVictory: { type: Type.BOOLEAN },
     },
-    required: ["narrative", "corporateUpdates", "personalUpdates", "event", "options", "isGameOver"],
+    required: ["narrative", "marketContext", "headlines", "corporateUpdates", "personalUpdates", "event", "options", "isGameOver"],
   };
 
   let prompt = "";
@@ -147,34 +179,26 @@ export const processTurn = async (
   if (isFirstTurn) {
     prompt = `
       INICIAR JOGO.
-      Nome do Jogador: ${currentState.playerName}
-      Nome da Empresa: ${currentState.companyName}
-      ID do Arquétipo Selecionado: ${currentState.archetypeId}
+      Nome: ${currentState.playerName}
+      Empresa: ${currentState.companyName}
+      Arquétipo: ${currentState.archetypeId}
+      Rival: ${currentState.rival ? JSON.stringify(currentState.rival) : "Desconhecido"}
       
-      Gere as estatísticas do Mês 1, uma narrativa inicial e o primeiro dilema.
-      Defina os valores iniciais.
-      IMPORTANTE: A lista de 'investments' deve começar vazia ou com valores mínimos dependendo do arquétipo.
+      Gere estatísticas Mês 1. Defina stress inicial baixo (0-10).
     `;
   } else {
     prompt = `
       RESOLVER TURNO ${currentState.turn} -> GERAR TURNO ${currentState.turn + 1}.
       
-      ESTADO ATUAL (Antes de Processar a Decisão):
+      ESTADO ATUAL:
       ${JSON.stringify(currentState, null, 2)}
       
-      DECISÃO DO JOGADOR:
+      DECISÃO:
       Escolha: ${decision?.choiceId}
-      Estratégia de Alocação do Excedente Pessoal: ${decision?.surplusAllocation}
+      Alocação Excedente: ${decision?.surplusAllocation}
       
-      INSTRUÇÕES:
-      1. Calcule o impacto financeiro na PJ e PF.
-      2. ATUALIZE OS INVESTIMENTOS:
-         - Se o jogador investiu o excedente, adicione ao ativo apropriado ou crie um novo.
-         - Aplique o rendimento do mês (baseado na Selic ou risco do ativo) a cada investimento existente na lista 'investments'.
-         - Calcule o 'monthlyYield' e 'yieldRate' para cada item.
-         - A soma dos 'monthlyYield' deve refletir em 'passiveIncome'.
-      3. Avance a linha do tempo.
-      4. Gere novo Evento e Opções.
+      LEMBRETE: Atualize o 'stress' na PF baseado na decisão. Se > 100, cause Burnout.
+      LEMBRETE: O Rival (${currentState.rival?.name}) deve estar fazendo algo.
     `;
   }
 
@@ -185,11 +209,10 @@ export const processTurn = async (
       systemInstruction: SYSTEM_INSTRUCTION,
       responseMimeType: "application/json",
       responseSchema: schema,
-      // Increased thinking budget for array calculations
       thinkingConfig: { thinkingBudget: 2048 }
     },
   });
 
   if (!response.text) throw new Error("No response from Gemini");
-  return JSON.parse(response.text) as TurnResponse;
+  return cleanAndParseJSON<TurnResponse>(response.text);
 };

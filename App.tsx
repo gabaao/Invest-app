@@ -6,15 +6,32 @@ import {
   OverviewSummary, 
   CorporateView, 
   PersonalView, 
-  PortfolioView 
+  PortfolioView,
+  NewsTicker
 } from './components/Dashboard';
 import { 
   Play, TrendingUp, Skull, Shield, Zap, Terminal, Loader2, ArrowRight, 
-  LayoutDashboard, Building2, User, PieChart, Menu
+  LayoutDashboard, Building2, User, PieChart, Crown, RotateCcw
 } from 'lucide-react';
 import { formatCurrency } from './components/FinancialCard';
 
 type Tab = 'overview' | 'corporate' | 'personal' | 'portfolio';
+const STORAGE_KEY = 'tycoon_save_v1';
+
+// Reactive Theme Helpers
+const getThemeStyles = (mood: string) => {
+    const m = mood.toLowerCase();
+    if (m.includes('bull') || m.includes('alta') || m.includes('otimismo')) {
+        return 'bg-gradient-to-b from-emerald-950/20 to-zinc-950 selection:bg-emerald-500/30';
+    }
+    if (m.includes('bear') || m.includes('queda') || m.includes('pessimismo')) {
+        return 'bg-gradient-to-b from-rose-950/20 to-zinc-950 selection:bg-rose-500/30';
+    }
+    if (m.includes('crash') || m.includes('recessão') || m.includes('crise')) {
+        return 'bg-gradient-to-b from-red-950/40 to-black selection:bg-red-500/50';
+    }
+    return 'bg-zinc-950 selection:bg-zinc-500/30'; // Neutral
+};
 
 const App: React.FC = () => {
   // --- STATE ---
@@ -39,43 +56,82 @@ const App: React.FC = () => {
   // Refs for scrolling
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  // --- PERSISTENCE ---
+  useEffect(() => {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved) as GameState;
+        setGameState(parsed);
+        if (parsed.isGameOver) setPhase(GamePhase.GAME_OVER);
+        else if (parsed.isVictory) setPhase(GamePhase.VICTORY);
+        else setPhase(GamePhase.PLAYING);
+      } catch (e) {
+        console.error("Save file corrupted, resetting.");
+        localStorage.removeItem(STORAGE_KEY);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (gameState) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(gameState));
+    }
+  }, [gameState]);
+
+  const handleReset = () => {
+    if (confirm("Tem certeza? Isso apagará todo o seu progresso atual.")) {
+      localStorage.removeItem(STORAGE_KEY);
+      setGameState(null);
+      setPhase(GamePhase.SETUP);
+      setPlayerName('');
+      setCompanyName('');
+      setSelectedArchetype(null);
+    }
+  };
+
   // --- HANDLERS ---
 
   useEffect(() => {
-    const init = async () => {
-      setLoading(true);
-      try {
-        const data = await GeminiService.fetchSetup();
-        setSetupData(data);
-      } catch (err) {
-        setError("Falha ao conectar ao Mestre do Jogo (Gemini). Verifique sua chave de API.");
-        console.error(err);
-      } finally {
-        setLoading(false);
-      }
-    };
-    init();
-  }, []);
+    if (phase === GamePhase.SETUP && !setupData) {
+        const init = async () => {
+          setLoading(true);
+          try {
+            const data = await GeminiService.fetchSetup();
+            setSetupData(data);
+          } catch (err) {
+            setError("Falha ao conectar ao Mestre do Jogo (Gemini). Verifique sua chave de API.");
+            console.error(err);
+          } finally {
+            setLoading(false);
+          }
+        };
+        init();
+    }
+  }, [phase, setupData]);
 
   const handleStartGame = async () => {
-    if (!selectedArchetype || !playerName || !companyName) return;
+    if (!selectedArchetype || !playerName || !companyName || !setupData) return;
     setLoading(true);
     const initialState: GameState = {
       turn: 0,
       playerName,
       companyName,
       archetypeId: selectedArchetype.id,
+      rival: setupData.rival, // Initialize Rival
       inflationRate: 0,
       interestRate: 0,
-      marketMood: setupData?.marketMood || 'Neutro',
+      marketMood: setupData.marketMood || 'Neutro',
       narrativeLog: [],
+      headlines: [],
       corporate: {
         cash: selectedArchetype.startingCapital,
         revenue: 0,
         expenses: 0,
         debtService: 0,
         valuation: selectedArchetype.startingCapital,
-        health: 'Solvente'
+        health: 'Solvente',
+        history: [] // Init history
       },
       personal: {
         netWorth: 0,
@@ -84,7 +140,8 @@ const App: React.FC = () => {
         investments: [],
         passiveIncome: 0,
         lifestyleCost: 0,
-        surplus: 0
+        surplus: 0,
+        stress: 0 // Initialize Stress
       },
       currentOptions: [],
       isGameOver: false
@@ -121,6 +178,19 @@ const App: React.FC = () => {
   };
 
   const updateGameState = (prev: GameState, response: TurnResponse) => {
+    // Calculate new History Snapshot
+    const totalExpenses = response.corporateUpdates.expenses + response.corporateUpdates.debtService;
+    const netProfit = response.corporateUpdates.revenue - totalExpenses;
+    
+    const newSnapshot = {
+        month: prev.turn + 1,
+        revenue: response.corporateUpdates.revenue,
+        expenses: totalExpenses,
+        profit: netProfit
+    };
+
+    const updatedHistory = [...(prev.corporate.history || []), newSnapshot];
+
     const newState: GameState = {
       ...prev,
       turn: prev.turn + 1,
@@ -132,20 +202,27 @@ const App: React.FC = () => {
           eventSummary: response.event,
         }
       ],
+      headlines: response.headlines,
       inflationRate: response.inflationRate,
       interestRate: response.interestRate,
       marketMood: response.marketContext,
-      corporate: response.corporateUpdates,
+      corporate: {
+          ...response.corporateUpdates,
+          history: updatedHistory
+      },
       personal: response.personalUpdates,
       currentEvent: response.event,
       currentOptions: response.options,
       isGameOver: response.isGameOver,
-      gameOverReason: response.gameOverReason
+      gameOverReason: response.gameOverReason,
+      isVictory: response.isVictory
     };
-    setGameState(newState);
-    if (response.isGameOver) setPhase(GamePhase.GAME_OVER);
     
-    // Always go back to overview when a new turn starts
+    setGameState(newState);
+    
+    if (response.isGameOver) setPhase(GamePhase.GAME_OVER);
+    else if (response.isVictory) setPhase(GamePhase.VICTORY);
+    
     setActiveTab('overview');
 
     setTimeout(() => {
@@ -159,11 +236,13 @@ const App: React.FC = () => {
     return (
       <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-4">
         <div className="bg-rose-950/30 border border-rose-800 text-rose-200 p-6 rounded-lg max-w-md text-center">
-          <AlertTriangle className="mx-auto mb-4 w-12 h-12" />
-          <h2 className="text-xl font-bold mb-2">Falha no Sistema</h2>
+          <div className="mx-auto mb-4 w-12 h-12 flex items-center justify-center rounded-full bg-rose-900/50">
+             <Skull className="text-rose-400" />
+          </div>
+          <h2 className="text-xl font-bold mb-2">Falha Crítica</h2>
           <p>{error}</p>
           <button onClick={() => window.location.reload()} className="mt-4 px-4 py-2 bg-rose-800 hover:bg-rose-700 rounded text-white font-mono text-sm">
-            Reiniciar Terminal
+            Reiniciar Sistema
           </button>
         </div>
       </div>
@@ -174,12 +253,12 @@ const App: React.FC = () => {
     return (
         <div className="min-h-screen bg-zinc-950 flex flex-col items-center justify-center text-zinc-400 gap-4">
             <Loader2 className="animate-spin w-8 h-8 text-emerald-500" />
-            <span className="font-mono animate-pulse">Inicializando Simulação Financeira...</span>
+            <span className="font-mono animate-pulse">Carregando Simulação Financeira...</span>
         </div>
     );
   }
 
-  // RENDER: SETUP (No changes to Setup UI)
+  // RENDER: SETUP
   if (phase === GamePhase.SETUP && setupData) {
     return (
       <div className="min-h-screen bg-zinc-950 text-zinc-200 p-4 md:p-8 font-sans">
@@ -193,9 +272,17 @@ const App: React.FC = () => {
              <p className="text-lg text-zinc-300 leading-relaxed font-serif italic border-l-4 border-emerald-500 pl-4">
                 "{setupData.intro}"
              </p>
-             <div className="mt-4 flex gap-2 items-center text-sm font-mono text-amber-500">
-                <TrendingUp size={16} />
-                Humor do Mercado: {setupData.marketMood}
+             <div className="mt-4 flex gap-4">
+                 <div className="flex gap-2 items-center text-sm font-mono text-amber-500">
+                    <TrendingUp size={16} />
+                    Humor do Mercado: {setupData.marketMood}
+                 </div>
+                 {setupData.rival && (
+                    <div className="flex gap-2 items-center text-sm font-mono text-rose-400">
+                        <Skull size={16} />
+                        Rival Detectado: {setupData.rival.name}
+                    </div>
+                 )}
              </div>
           </div>
 
@@ -271,6 +358,7 @@ const App: React.FC = () => {
   // RENDER: MAIN GAME
   if (gameState) {
     const isProcessing = loading;
+    const themeClass = getThemeStyles(gameState.marketMood);
     
     // Tab Button Component
     const TabBtn = ({ id, label, icon: Icon }: { id: Tab, label: string, icon: any }) => (
@@ -284,10 +372,13 @@ const App: React.FC = () => {
     );
 
     return (
-      <div className="min-h-screen bg-zinc-950 text-zinc-200 pb-20">
+      <div className={`min-h-screen text-zinc-200 pb-20 transition-colors duration-1000 ${themeClass}`}>
         
         {/* HEADER */}
         <div className="sticky top-0 z-50 bg-zinc-950/95 backdrop-blur border-b border-zinc-800">
+            {/* News Ticker */}
+            {gameState.headlines && <NewsTicker headlines={gameState.headlines} />}
+
             <div className="px-4 py-3 flex justify-between items-center max-w-4xl mx-auto">
                 <div className="flex items-center gap-3">
                     <div className="w-8 h-8 bg-zinc-800 rounded flex items-center justify-center">
@@ -298,6 +389,13 @@ const App: React.FC = () => {
                         <span className="text-xs text-zinc-500 font-mono">CEO: {gameState.playerName}</span>
                     </div>
                 </div>
+                <button 
+                    onClick={handleReset}
+                    className="p-2 text-zinc-500 hover:text-rose-500 transition-colors"
+                    title="Resetar Simulação"
+                >
+                    <RotateCcw size={16} />
+                </button>
             </div>
             
             {/* NAVIGATION TABS */}
@@ -330,7 +428,7 @@ const App: React.FC = () => {
                                 <p className="text-lg leading-relaxed">{gameState.narrativeLog[gameState.narrativeLog.length - 1].text}</p>
                             </div>
                             
-                            {gameState.currentEvent && !gameState.isGameOver && (
+                            {gameState.currentEvent && !gameState.isGameOver && !gameState.isVictory && (
                                 <div className="bg-amber-950/20 border border-amber-900/50 p-4 rounded-lg flex gap-4 items-start">
                                     <div className="bg-amber-900/20 p-2 rounded text-amber-500 mt-1">
                                         <AlertTriangle size={20} />
@@ -344,7 +442,7 @@ const App: React.FC = () => {
                         </div>
 
                         {/* Decisions (Only on Overview) */}
-                        {!gameState.isGameOver && (
+                        {!gameState.isGameOver && !gameState.isVictory && (
                             <div className="space-y-6 pb-12">
                                 <h2 className="text-xs font-bold text-zinc-500 uppercase tracking-widest flex items-center gap-2">
                                     <Shield size={14} /> Decisões Estratégicas
@@ -356,7 +454,7 @@ const App: React.FC = () => {
                                         Alocação do Excedente Pessoal ({formatCurrency(gameState.personal.surplus)})
                                     </label>
                                     <div className="flex flex-wrap gap-2 mb-3">
-                                        {['Reinvestir na Empresa', 'Comprar Ações', 'Guardar Dinheiro', 'Melhorar Estilo de Vida'].map((opt) => (
+                                        {['Reinvestir na Empresa', 'Comprar Ações', 'Guardar Dinheiro', 'Melhorar Estilo de Vida (-Stress)', 'Férias (-Stress)'].map((opt) => (
                                             <button
                                                 key={opt}
                                                 onClick={() => { setSurplusAllocation(opt); setCustomAllocation(''); }}
@@ -441,18 +539,48 @@ const App: React.FC = () => {
 
             {/* GAME OVER OVERLAY */}
             {gameState.isGameOver && (
-                 <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
+                 <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in zoom-in-95">
                      <div className="bg-rose-950/20 border border-rose-900 p-8 rounded-xl text-center space-y-6 max-w-lg w-full">
-                         <Skull className="w-16 h-16 text-rose-500 mx-auto" />
+                         <div className="w-20 h-20 bg-rose-950 rounded-full flex items-center justify-center mx-auto ring-2 ring-rose-500 shadow-2xl shadow-rose-900/50">
+                            <Skull className="w-10 h-10 text-rose-500" />
+                         </div>
                          <div>
-                             <h2 className="text-3xl font-bold text-white mb-2">FIM DE JOGO</h2>
+                             <h2 className="text-3xl font-bold text-white mb-2 tracking-tight">FIM DE JOGO</h2>
                              <p className="text-rose-200 text-lg">{gameState.gameOverReason}</p>
                          </div>
-                         <div className="font-mono text-zinc-500">
-                            Você sobreviveu por {gameState.turn} meses.
+                         <div className="bg-black/50 p-4 rounded text-sm font-mono text-zinc-500">
+                            Sobreviveu por: <span className="text-white">{gameState.turn} meses</span>
                          </div>
-                         <button onClick={() => window.location.reload()} className="px-6 py-3 bg-zinc-800 hover:bg-zinc-700 text-white rounded font-bold w-full">
+                         <button onClick={handleReset} className="px-6 py-4 bg-zinc-100 hover:bg-white text-black rounded font-bold w-full uppercase tracking-widest">
                             Jogar Novamente
+                         </button>
+                     </div>
+                 </div>
+            )}
+
+            {/* VICTORY OVERLAY */}
+            {gameState.isVictory && (
+                 <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in zoom-in-95">
+                     <div className="bg-emerald-950/20 border border-emerald-900 p-8 rounded-xl text-center space-y-6 max-w-lg w-full">
+                         <div className="w-20 h-20 bg-emerald-950 rounded-full flex items-center justify-center mx-auto ring-2 ring-emerald-500 shadow-2xl shadow-emerald-900/50">
+                            <Crown className="w-10 h-10 text-emerald-400" />
+                         </div>
+                         <div>
+                             <h2 className="text-3xl font-bold text-white mb-2 tracking-tight">MAGNATA FINANCEIRO</h2>
+                             <p className="text-emerald-200 text-lg">Você atingiu a Independência Financeira Absoluta.</p>
+                         </div>
+                         <div className="bg-black/50 p-4 rounded text-sm font-mono space-y-2">
+                             <div className="flex justify-between">
+                                 <span className="text-zinc-500">Patrimônio</span>
+                                 <span className="text-emerald-400">{formatCurrency(gameState.personal.netWorth)}</span>
+                             </div>
+                             <div className="flex justify-between">
+                                 <span className="text-zinc-500">Renda Passiva</span>
+                                 <span className="text-emerald-400">{formatCurrency(gameState.personal.passiveIncome)}/mês</span>
+                             </div>
+                         </div>
+                         <button onClick={handleReset} className="px-6 py-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded font-bold w-full uppercase tracking-widest shadow-lg shadow-emerald-900/20">
+                            Nova Simulação
                          </button>
                      </div>
                  </div>
